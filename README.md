@@ -90,33 +90,48 @@ go test ./... -v
 
 ## Technical Questions
 
-**1. Explain your database schema design. Why did you choose this structure?**
-I chose a normalized, two-table design (`categories` and `todos`) to fulfill the requirements without over-engineering. The `todos` table holds a foreign key to `categories` (`category_id`) with `ON DELETE SET NULL`, meaning if a category is deleted, the associated todos remain intact but lose their category tag. 
+### Database Design Questions
 
-**2. How did you handle full-text search?**
-Instead of using a slow `ILIKE '%term%'` query, I implemented PostgreSQL's Native Full-Text Search. I created a GIN index on the `title` column `USING gin(to_tsvector('english', title))`. In the GORM repository, I query this using `to_tsvector('english', title) @@ plainto_tsquery(?)`. This allows for fast, index-backed searching.
+**1. What database tables did you create and why?**
+- **Describe each table and its purpose:** I created two tables: `categories` and `todos`. The `categories` table stores categorical tags with unique names and colors, allowing users to group tasks visually. The `todos` table is the core of the application, storing task details like `title`, `description`, `priority`, `completed` status, and `due_date`.
+- **Explain the relationships between tables:** There is a one-to-many relationship between `categories` and `todos`. The `todos` table contains a `category_id` foreign key referencing `categories.id`. I used `ON DELETE SET NULL` for this relationship so that deleting a category simply removes the tag from associated tasks rather than deleting the tasks themselves.
+- **Why did you choose this structure?:** This normalized, 2-table schema satisfies all project constraints without over-engineering. It is simple to maintain, fast to query, and accurately represents the domain logic.
 
-**3. Explain your backend architecture.**
-I implemented a Clean Architecture pattern:
-- **Domain:** Defines the interfaces and data structs (`Todo`, `TodoRepository`, `TodoService`).
-- **Repository (GORM):** Speaks strictly to the database.
-- **Service:** Contains business logic (validation, defaults) and knows nothing about HTTP or the DB implementation.
-- **Handler (Gin):** Parses HTTP requests, calls the service, and returns standard JSON responses.
-This separation of concerns makes the service layer easily unit-testable using Mock Repositories.
+**2. How did you handle pagination and filtering in the database?**
+- **What queries did you write for filtering and sorting?:** Filtering and sorting are dynamically constructed using GORM. I check filter presence (e.g., status, priority, category) and chain `.Where()` clauses. For searching, I wrote a PostgreSQL native query using `to_tsvector` and `plainto_tsquery` to match against both the title and description. Sorting is handled by appending `.Order("column ASC/DESC")`.
+- **How do you handle pagination efficiently?:** I calculate an `offset = (page - 1) * limit`. Crucially, I execute a `.Count()` on the filtered query *before* applying `.Preload()` or the `Offset`/`Limit` to fetch the accurate total count for the frontend, and then fetch the paginated subset of data.
+- **What indexes (if any) did you add and why?:** I added B-Tree indexes on `completed` and `category_id` to speed up filtering on those fields. Most importantly, I added a `GIN` index (`idx_todos_title_desc_fts`) over a combined `to_tsvector` of the `title` and `description` to enable blazing-fast full-text searches.
 
-**4. How did you implement pagination?**
-Pagination is implemented in the `TodoRepository.List` method. It receives `Page` and `Limit` in the `TodoFilter` struct. Crucially, I calculate the `OFFSET` via `(page - 1) * limit`. I execute `.Count(&total)` on the query *before* applying `.Preload("Category")` to ensure accurate total counts, then apply `Offset()` and `Limit()` to fetch the slice. The frontend Ant Design Table receives this data and syncs its state via the Context API.
+### Technical Decision Questions
 
-**5. Why did you choose React Context API for state management?**
-The requirements specified standard React features without external libraries like Redux. The Context API (`TodoContext.jsx`) allows me to elevate the global state (`todos`, `categories`, `filters`, `pagination`) so it can be accessed by nested components (`TodoFilters`, `TodoList`, `TodoForm`) without prop-drilling. It acts as the single source of truth for the frontend application.
+**1. How did you implement responsive design?**
+- **What breakpoints did you use and why?:** I primarily targeted a mobile breakpoint (`<768px`) for stacked layouts and a desktop breakpoint (`>768px`) for side-by-side or expansive grid layouts, mirroring standard tablet/mobile device widths.
+- **How does the UI adapt on different screen sizes?:** On smaller screens, the filter controls wrap into multiple lines using flexbox `wrap`, and the main Todo table enables horizontal scrolling to prevent the UI from breaking or squishing columns.
+- **Which Ant Design components helped with responsiveness?:** The `<Space wrap>` component effortlessly handled responsive flow for the filter inputs. The `<Table>` component's `scroll={{ x: 800 }}` property was vital for preserving table formatting on mobile viewports.
 
-**6. How do you handle error states?**
-On the Backend, errors bubble up from the DB/Service to the Handler, which formats them into a standardized JSON envelope (`{ "error": "type", "message": "msg" }`). On the Frontend, Axios calls are wrapped in `try/catch` blocks within the Context. If an error occurs, I use Ant Design's `message.error()` to display a non-intrusive toast notification to the user.
+**2. How did you structure your React components?**
+- **Explain your component hierarchy:** `App` acts as the layout shell. Inside, `TodoFilters` sits at the top for controls, `CategoryManager` opens as a Drawer for categorical CRUD, and `TodoList` renders the main data table. `TodoForm` is an independent Modal triggered by either the "New Task" button or the edit actions in `TodoList`.
+- **How did you manage state between components?:** I used the **React Context API** (`TodoContext.jsx`) instead of prop-drilling. The Context holds the global list of todos, categories, current filters, and pagination state, making it accessible to any component.
+- **How did you handle the filtering and pagination state?:** The `filters` state is stored as an object in Context. When a filter changes via `TodoFilters`, it triggers a state update, resets the Context's pagination `current` page to 1, and fires a `useEffect` hook to fetch new data from the API.
 
-**7. If you had more time, what would you improve?**
-1. **Caching:** Implement Redis to cache the `GET /api/categories` endpoint, as category data changes infrequently.
-2. **Authentication:** Add JWT-based user authentication so multiple users can have private Todo lists.
-3. **Frontend Testing:** Add Vitest and React Testing Library to test component rendering and context logic.
+**3. What backend architecture did you choose and why?**
+- **How did you organize your API routes?:** Using Gin, I created an `/api` router group and mounted RESTful resource paths: `/api/todos` and `/api/categories`, standardizing the URL scheme.
+- **How did you structure your code?:** I adopted a **Clean Architecture** pattern. The code is split into `domain` (interfaces/structs), `repository` (GORM database queries), `service` (business logic), and `handler` (Gin HTTP request parsing/responses). This enforces a separation of concerns and makes testing trivial.
+- **What error handling approach did you implement?:** Errors propagate up from the repository to the service, and finally to the handler. The handler formats the error into a standardized JSON envelope (`{ "error": "error_type", "message": "specific details" }`) and returns the appropriate HTTP status code (e.g., 400, 404, 500).
 
-**8. What was the most challenging part of this implementation?**
-Ensuring accurate pagination alongside dynamic, multi-field filtering. GORM can behave unpredictably if you apply a `.Count()` to a query that has a `JOIN` or `.Preload()` attached, as it attempts to count the joined rows. Separating the base filtering query to get the `Count`, and *then* applying the Preload and Pagination limits required careful structuring in `todo_repo.go`.
+**4. How did you handle data validation?**
+- **Where do you validate data?:** Data is validated on both the **frontend** and **backend**.
+- **What validation rules did you implement?:** Frontend validation (via Ant Design's `Form.Item` rules) prevents submission of empty titles. Backend validation in the Service layer enforces that `title` is not empty, assigns default priorities if missing, and restricts `priority` to explicit enums (`high`, `medium`, `low`).
+- **Why did you choose this approach?:** Frontend validation provides immediate, friendly feedback to the user, ensuring a good UX. Backend validation is the ultimate source of truth, protecting the database from malformed data injected via cURL or Postman.
+
+### Testing & Quality Questions
+
+**1. What did you choose to unit test and why?**
+- **Which functions/methods have tests?:** I unit tested the `TodoService` and `CategoryService` methods (e.g., `CreateTodo`, `ToggleComplete`, `DeleteCategory`).
+- **What edge cases did you consider?:** I tested missing required fields (empty title), invalid enumerations (unsupported priority), and operating on non-existent IDs (deleting or updating a todo that doesn't exist).
+- **How did you structure your tests?:** Because of the Clean Architecture, I created a `mock_repo.go` that implements the `TodoRepository` interface entirely in memory. This allowed my unit tests to execute the service-layer business logic swiftly without spinning up a real PostgreSQL database.
+
+**2. If you had more time, what would you improve or add?**
+- **What technical debt would you address?:** I would migrate the React frontend from plain JavaScript to strict **TypeScript**. Currently, React Context provides no auto-completion for component consumers, which could cause bugs as the app scales.
+- **What features would you add?:** I would add user authentication (JWT) so multiple users can have isolated task lists, and implement a drag-and-drop system to let users manually reorder task priorities.
+- **What would you refactor?:** I would extract the filtering parameters out of the React Context and sync them directly with the URL query parameters (e.g., using React Router). This would make specific filter views shareable and bookmarkable for users.

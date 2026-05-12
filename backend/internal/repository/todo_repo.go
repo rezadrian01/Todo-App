@@ -21,7 +21,7 @@ func (r *todoRepo) List(ctx context.Context, f domain.TodoFilter) ([]domain.Todo
 	query := r.db.WithContext(ctx).Model(&domain.Todo{})
 
 	if f.Search != "" {
-		query = query.Where("to_tsvector('english', title) @@ plainto_tsquery(?)", f.Search)
+		query = query.Where("to_tsvector('english', title || ' ' || COALESCE(description, '')) @@ plainto_tsquery(?)", f.Search)
 	}
 	if f.Status == "completed" {
 		query = query.Where("completed = ?", true)
